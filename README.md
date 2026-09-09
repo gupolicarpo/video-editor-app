@@ -55,3 +55,11 @@ recarrega sozinho e mostra a edição ao vivo. Deixe o app aberto com `npm start
 
 O Claude Code usa o `.mcp.json` da raiz. O Claude Desktop precisa da extensão `.mcpb` — este build
 ignora `mcpServers` no `claude_desktop_config.json`.
+
+## Licença
+
+MIT — veja [LICENSE](LICENSE). Você pode usar, modificar e distribuir, inclusive
+comercialmente, mantendo o aviso de copyright.
+
+FFmpeg e o modelo RobustVideoMatting têm licenças próprias e não são distribuídos
+neste repositório.
