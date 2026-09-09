@@ -42,3 +42,15 @@ video_app_new_UI/
 *.m4a
 *.vedit.json
 *.vedit.json.bak
+
+# ---- configuração de máquina (caminhos absolutos, não servem a outra pessoa) ----
+.mcp.json
+.codex/config.toml
+launch-app.vbs
+
+# ---- scripts avulsos de teste (caminhos fixos, não fazem parte do app) ----
+mcp/luma-*.mjs
+mcp/seedance-avatar.mjs
+mcp/generate-lut.mjs
+mcp/matting.py
+mcp/err.txt

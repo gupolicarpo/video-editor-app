@@ -1,6 +1,0 @@
-[mcp_servers.kling]
-url = "https://kling.ai/mcp"
-
-[mcp_servers.video-editor]
-command = "node"
-args = ['C:\Users\gupol\Documents\Video_Editor_App\mcp\dist\index.js']

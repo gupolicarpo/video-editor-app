@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "video-editor": {
+      "command": "node",
+      "args": ["mcp/dist/index.js"]
+    }
+  }
+}
