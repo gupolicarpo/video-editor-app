@@ -1,0 +1,16 @@
+{
+  "manifest_version": "0.4",
+  "name": "video-editor",
+  "display_name": "Video Editor",
+  "version": "0.2.0",
+  "description": "Claude Desktop como produtor do editor de vídeo: timeline, texto, transições, IA e render.",
+  "author": { "name": "gupolicarpo" },
+  "server": {
+    "type": "node",
+    "entry_point": "index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/index.js"]
+    }
+  }
+}

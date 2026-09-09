@@ -1,0 +1,44 @@
+# ---- dependências e saídas de build ----
+node_modules
+out
+dist
+build/*.tsbuildinfo
+*.tsbuildinfo
+release
+*.log
+.DS_Store
+
+# ---- segredos ----
+# As chaves de API ficam em %APPDATA%/video-editor-app/settings.json, FORA do repo.
+# Estes padrões são uma segunda barreira, caso alguma cópia caia aqui dentro.
+settings.json
+.env
+.env.*
+*.key
+*.pem
+*secret*
+*credential*
+ai_config.local.json
+*.local.json
+
+# ---- binários grandes (não cabem no GitHub / são baixáveis) ----
+# vendor/ffmpeg: ffmpeg.exe e ffprobe.exe têm 201 MB cada — acima do limite de 100 MB.
+# vendor/models: rvm_mobilenetv3_fp32.onnx (14 MB), baixado do projeto RobustVideoMatting.
+# Ambos são necessários para rodar; veja o README.
+vendor/
+
+# ---- material de trabalho, não é código do app ----
+scratch_transcribe/
+scratchpad/
+_review/
+cards/
+images/
+video_app_new_UI/
+*.mp4
+*.webm
+*.mkv
+*.mov
+*.wav
+*.m4a
+*.vedit.json
+*.vedit.json.bak

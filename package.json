@@ -1,0 +1,109 @@
+{
+  "name": "video-editor-app",
+  "version": "0.1.0",
+  "description": "Editor de vídeo desktop com timeline multi-faixa e geração por IA (Seedance, Veo)",
+  "main": "./out/main/index.js",
+  "author": "gupolicarpo",
+  "license": "MIT",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "start": "electron-vite preview",
+    "dist": "electron-vite build && electron-builder",
+    "pack": "electron-vite build && electron-builder --dir",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "test:seedance": "node --test tests/seedance.test.mjs tests/seedance-assets.test.mjs tests/seedream-character.test.mjs",
+    "test:transcribe": "node --test tests/transcribe.test.mjs",
+    "test:ripple-trim": "node --test tests/ripple-trim.test.mjs"
+  },
+  "dependencies": {
+    "@volcengine/tos-sdk": "^2.9.1",
+    "nanoid": "^5.0.7",
+    "onnxruntime-web": "^1.20.1",
+    "zustand": "^4.5.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.4",
+    "@types/react": "^18.3.11",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.2",
+    "electron": "^32.1.2",
+    "electron-builder": "^25.1.7",
+    "electron-vite": "^2.3.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "typescript": "^5.6.2",
+    "vite": "^5.4.8"
+  },
+  "build": {
+    "appId": "com.gupolicarpo.videoeditor",
+    "productName": "Video Editor",
+    "directories": {
+      "output": "release",
+      "buildResources": "."
+    },
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "vendor/models",
+        "to": "models"
+      }
+    ],
+    "win": {
+      "target": "nsis",
+      "icon": "app-icon.ico",
+      "extraResources": [
+        {
+          "from": "vendor/ffmpeg",
+          "to": "ffmpeg"
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "shortcutName": "Video Editor"
+    },
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "icon": "app-icon.icns",
+      "category": "public.app-category.video",
+      "darkModeSupport": true,
+      "hardenedRuntime": true,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "extendInfo": {
+        "NSCameraUsageDescription": "O Video Editor precisa da câmera para gravar seus takes.",
+        "NSMicrophoneUsageDescription": "O Video Editor precisa do microfone para gravar o áudio.",
+        "NSDocumentsFolderUsageDescription": "Para abrir e salvar seus projetos e mídias.",
+        "NSDesktopFolderUsageDescription": "Para abrir e salvar seus projetos e mídias."
+      },
+      "extraResources": [
+        {
+          "from": "vendor/ffmpeg-mac",
+          "to": "ffmpeg"
+        }
+      ]
+    }
+  }
+}

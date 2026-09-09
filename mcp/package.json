@@ -1,0 +1,27 @@
+{
+  "name": "video-editor-mcp",
+  "version": "0.2.0",
+  "description": "MCP server that lets Claude or Codex act as the producer/editor for the Video Editor app",
+  "type": "module",
+  "bin": {
+    "video-editor-mcp": "./dist/index.js"
+  },
+  "scripts": {
+    "check": "tsc -p tsconfig.json --noEmit --pretty false",
+    "build": "npm run check && node build.mjs",
+    "pack": "node pack-extension.mjs",
+    "package": "npm run build && npm run pack",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "@volcengine/tos-sdk": "^2.9.1",
+    "hyperframes": "^0.7.59",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^22.7.4",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.6.2"
+  }
+}
