@@ -53,7 +53,8 @@ O MCP edita o mesmo arquivo de projeto que o app observa
 (`%APPDATA%/video-editor-app/autosave.vedit.json`, ou o caminho em `VEDIT_PROJECT`), então o app
 recarrega sozinho e mostra a edição ao vivo. Deixe o app aberto com `npm start`.
 
-O Claude Code usa o `.mcp.json` da raiz. O Claude Desktop precisa da extensão `.mcpb` — este build
+O Claude Code usa o `.mcp.json` da raiz — ele não é versionado porque guarda caminhos da
+sua máquina. Copie o modelo: `cp .mcp.json.example .mcp.json`. O Claude Desktop precisa da extensão `.mcpb` — este build
 ignora `mcpServers` no `claude_desktop_config.json`.
 
 ## Licença
