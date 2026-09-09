@@ -10,6 +10,7 @@ Documentação de arquitetura e as armadilhas já medidas estão em [CLAUDE.md](
 
 ```bash
 npm install
+npm run setup    # baixa FFmpeg e o modelo de recorte (veja abaixo)
 npm run dev      # hot-reload
 npm start        # versão compilada
 npm run build    # compilar
@@ -18,16 +19,23 @@ npm run dist     # gerar instalador (NSIS, sai em release/)
 
 ## Dependências binárias (não versionadas)
 
-`vendor/` está no `.gitignore` porque os binários passam do limite de 100 MB do GitHub. Depois de
-clonar, recrie a pasta:
+`npm run setup` baixa tudo sozinho e é idempotente — rodar de novo só confere o que já está no
+lugar. Use `npm run setup -- --force` para rebaixar.
 
-| caminho | o que é | onde conseguir |
+| caminho | o que é | tamanho |
 |---|---|---|
-| `vendor/ffmpeg/ffmpeg.exe`<br>`vendor/ffmpeg/ffprobe.exe` | FFmpeg 8 full build (~201 MB cada) — motor de render, enhance e normalização | https://www.gyan.dev/ffmpeg/builds/ |
-| `vendor/models/rvm_mobilenetv3_fp32.onnx` | RobustVideoMatting, usado pelo ✂ Remover fundo (~14 MB) | https://github.com/PeterL1n/RobustVideoMatting |
+| `vendor/ffmpeg/ffmpeg.exe`<br>`vendor/ffmpeg/ffprobe.exe` | FFmpeg 8.1 (build GPL da BtbN) — motor de render, enhance e normalização | ~170 MB compactado |
+| `vendor/models/rvm_mobilenetv3_fp32.onnx` | [RobustVideoMatting](https://github.com/PeterL1n/RobustVideoMatting), usado pelo ✂ Remover fundo | 15 MB |
 
-O app resolve o FFmpeg nesta ordem: variável de ambiente → `resources/` (empacotado) → `PATH`.
-Se você já tem FFmpeg 8 no `PATH`, dá para rodar em desenvolvimento sem preencher `vendor/ffmpeg`.
+Estão fora do repositório porque cada executável do FFmpeg tem ~200 MB, acima do limite de 100 MB
+por arquivo do GitHub.
+
+O script confere se o FFmpeg baixado traz `libx264`, `libvpx-vp9`, `libopus` e NVENC, e avisa se
+faltar algum. Sem NVENC o app ainda exporta, só que pelo `libx264` na CPU, mais devagar.
+
+**macOS e Linux:** não há build oficial equivalente, então o script procura o FFmpeg no `PATH` e
+diz o que instalar se não achar (`brew install ffmpeg` / `sudo apt install ffmpeg`). O app resolve o
+FFmpeg nesta ordem: variável de ambiente → `resources/` (empacotado) → `PATH`.
 
 Opcionais, por recurso:
 

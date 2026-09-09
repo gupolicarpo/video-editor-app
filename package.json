@@ -6,6 +6,7 @@
   "author": "gupolicarpo",
   "license": "MIT",
   "scripts": {
+    "setup": "node scripts/setup.mjs",
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "start": "electron-vite preview",
