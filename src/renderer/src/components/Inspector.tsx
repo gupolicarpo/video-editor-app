@@ -434,6 +434,78 @@ export function Inspector({
                 <button className="btn-mini" title="Sem giro" onClick={() => { commit(); set({ rotate: 0 }) }} disabled={!(clip.rotate ?? 0)}>Zerar</button>
               </div>
               {isVisual && (
+                <>
+                  <div className="insp-section">Recorte</div>
+                  <Range
+                    label="Esquerda"
+                    value={(clip.crop?.l ?? 0) * 100}
+                    min={0}
+                    max={90}
+                    step={1}
+                    display={`${Math.round((clip.crop?.l ?? 0) * 100)}%`}
+                    onChange={(v) => {
+                      const cr = clip.crop ?? { l: 0, r: 0, t: 0, b: 0 }
+                      let l = v / 100
+                      let r = cr.r
+                      if (l + r > 0.9) r = 0.9 - l
+                      set({ crop: { ...cr, l, r } })
+                    }}
+                  />
+                  <Range
+                    label="Direita"
+                    value={(clip.crop?.r ?? 0) * 100}
+                    min={0}
+                    max={90}
+                    step={1}
+                    display={`${Math.round((clip.crop?.r ?? 0) * 100)}%`}
+                    onChange={(v) => {
+                      const cr = clip.crop ?? { l: 0, r: 0, t: 0, b: 0 }
+                      let r = v / 100
+                      let l = cr.l
+                      if (l + r > 0.9) l = 0.9 - r
+                      set({ crop: { ...cr, l, r } })
+                    }}
+                  />
+                  <Range
+                    label="Topo"
+                    value={(clip.crop?.t ?? 0) * 100}
+                    min={0}
+                    max={90}
+                    step={1}
+                    display={`${Math.round((clip.crop?.t ?? 0) * 100)}%`}
+                    onChange={(v) => {
+                      const cr = clip.crop ?? { l: 0, r: 0, t: 0, b: 0 }
+                      let t = v / 100
+                      let b = cr.b
+                      if (t + b > 0.9) b = 0.9 - t
+                      set({ crop: { ...cr, t, b } })
+                    }}
+                  />
+                  <Range
+                    label="Base"
+                    value={(clip.crop?.b ?? 0) * 100}
+                    min={0}
+                    max={90}
+                    step={1}
+                    display={`${Math.round((clip.crop?.b ?? 0) * 100)}%`}
+                    onChange={(v) => {
+                      const cr = clip.crop ?? { l: 0, r: 0, t: 0, b: 0 }
+                      let b = v / 100
+                      let t = cr.t
+                      if (t + b > 0.9) t = 0.9 - b
+                      set({ crop: { ...cr, t, b } })
+                    }}
+                  />
+                  <button
+                    className="btn-mini full-mini"
+                    onClick={() => { commit(); set({ crop: undefined }) }}
+                    disabled={!clip.crop}
+                  >
+                    Zerar recorte
+                  </button>
+                </>
+              )}
+              {isVisual && (
                 <label className="field">
                   Preenchimento
                   <select value={clip.fit} onChange={(e) => { commit(); set({ fit: e.target.value as any }) }}>

@@ -11,7 +11,6 @@ import { ExportModal } from './components/ExportModal'
 import { SessionsModal } from './components/SessionsModal'
 import { RecordPanel } from './components/RecordPanel'
 import { useEditor } from './store'
-import { computePeaks } from './mediaTools'
 import type { ProjectData } from './types'
 
 export default function App(): JSX.Element {
@@ -54,6 +53,17 @@ export default function App(): JSX.Element {
       } else if (e.code === 'Space') {
         e.preventDefault()
         setPlaying(!isPlaying)
+      } else if (ctrl && e.key.toLowerCase() === 'g') {
+        e.preventDefault()
+        if (e.shiftKey) useEditor.getState().ungroupSelection()
+        else useEditor.getState().groupSelection()
+      } else if (ctrl && e.shiftKey && e.key.toLowerCase() === 't') {
+        // Trace nativo MANUAL (Ctrl+Shift+T): 8 s de tudo — mídia, áudio,
+        // compositor, GPU. Para quando o som picota sem nenhuma travada
+        // registrada: o disparo automático só pega travadas da thread principal.
+        e.preventDefault()
+        void window.api.perfLog('trace manual pedido (Ctrl+Shift+T)')
+        void window.api.perfTrace(8)
       } else if (ctrl && e.key.toLowerCase() === 'c') {
         e.preventDefault()
         useEditor.getState().copySelection()
@@ -130,6 +140,10 @@ export default function App(): JSX.Element {
   useEffect(() => {
     let last = performance.now()
     let raf = 0
+    // As travadas do usuário vêm em rajadas de 5-10 seguidas; perfilar os 4s
+    // SEGUINTES à primeira (em vez da que já passou) pega as próximas da
+    // rajada. Um cooldown de 30s evita empilhar profilers.
+    let ultimoPerfil = 0
     const beat = (now: number): void => {
       const gap = now - last
       if (gap > 300) {
@@ -138,11 +152,68 @@ export default function App(): JSX.Element {
           `stall ${Math.round(gap)}ms | playing=${st.isPlaying} playhead=${st.playhead.toFixed(1)} clips=${st.clips.length} media=${st.media.length}`
         )
       }
+      if (gap > 700 && useEditor.getState().isPlaying && now - ultimoPerfil > 30000) {
+        ultimoPerfil = now
+        // trace nativo (o perfil de JS só mostrava "(program)")
+        void window.api.perfTrace(4)
+      }
       last = now
       raf = requestAnimationFrame(beat)
     }
     raf = requestAnimationFrame(beat)
-    return () => cancelAnimationFrame(raf)
+    // Quadros PERDIDOS nos <video>, a cada 2 s durante o play. O "pulando" que o
+    // usuário vê não é travada da thread principal (o batimento acima não pega)
+    // — é o decodificador sem orçamento. Sem isto, semanas de "trava" sem prova.
+    const drops = new WeakMap<HTMLVideoElement, number>()
+    const iv = window.setInterval(() => {
+      const st = useEditor.getState()
+      if (!st.isPlaying) return
+      let perdidos = 0
+      let tocando = 0
+      for (const v of document.querySelectorAll('video')) {
+        if (!v.paused) tocando++
+        const q = v.getVideoPlaybackQuality()
+        const antes = drops.get(v)
+        if (antes !== undefined) perdidos += Math.max(0, q.droppedVideoFrames - antes)
+        drops.set(v, q.droppedVideoFrames)
+      }
+      // FOME DE BUFFER: mede diretamente onde o áudio/vídeo fica sem dado.
+      // Para cada elemento tocando: quanto de mídia já carregada existe à
+      // frente da posição atual e o readyState. Fome = < 0,3 s à frente ou
+      // readyState < 3 (HAVE_FUTURE_DATA). É o que "picota" de verdade.
+      const fome: string[] = []
+      for (const el of document.querySelectorAll('video,audio') as NodeListOf<HTMLMediaElement>) {
+        if (el.paused) continue
+        let ahead = Infinity
+        try {
+          for (let i = 0; i < el.buffered.length; i++) {
+            if (el.buffered.start(i) <= el.currentTime && el.currentTime <= el.buffered.end(i)) {
+              ahead = el.buffered.end(i) - el.currentTime
+              break
+            }
+          }
+          if (ahead === Infinity && el.buffered.length === 0) ahead = 0
+        } catch {
+          /* buffered pode lançar durante troca de src */
+        }
+        if (el.readyState < 3 || ahead < 0.3) {
+          const nome = decodeURIComponent((el.currentSrc || el.src).split(/[\/]/).pop() || '').slice(0, 40)
+          fome.push(`${el.tagName.toLowerCase()} rs=${el.readyState} ahead=${ahead === Infinity ? '?' : ahead.toFixed(2)}s ${nome}`)
+        }
+      }
+      if (fome.length) {
+        void window.api.perfLog(`fome ${fome.length} | playhead=${st.playhead.toFixed(1)} | ${fome.slice(0, 4).join(' ; ')}`)
+      }
+      if (perdidos > 20) {
+        void window.api.perfLog(
+          `drops ${perdidos} em 2s | tocando=${tocando} playhead=${st.playhead.toFixed(1)} clips=${st.clips.length}`
+        )
+      }
+    }, 2000)
+    return () => {
+      cancelAnimationFrame(raf)
+      window.clearInterval(iv)
+    }
   }, [])
 
   // Restore last autosaved project on startup.
@@ -186,6 +257,64 @@ export default function App(): JSX.Element {
     }
   }, [media, timelineClips])
 
+  // Proxy de edição: pede uma cópia 720p com keyframe curto para cada vídeo
+  // importado (usada só no preview — o export sempre lê o original).
+  const proxyPending = useRef(new Set<string>())
+  useEffect(() => {
+    for (const m of media) {
+      if (m.type !== 'video') continue
+      const key = `${m.id}|${m.path}`
+      if (proxyPending.current.has(key)) continue
+      proxyPending.current.add(key)
+      window.api
+        .proxyEnsure(m.id, m.path)
+        .then((res) => {
+          if (res.status === 'ready') {
+            if (res.path !== m.editProxyPath) useEditor.getState().setMediaEditProxy(m.id, res.path)
+          } else if (m.editProxyPath) {
+            useEditor.getState().setMediaEditProxy(m.id, null)
+          }
+        })
+        // Sem proxy o preview só fica como era antes (lê o original) — nunca
+        // um motivo para derrubar o app. Tira da lista para tentar de novo
+        // na próxima mudança de mídia.
+        .catch(() => proxyPending.current.delete(key))
+    }
+  }, [media])
+
+  const proxiesPendentes = useRef<{ mediaId: string; src: string; path: string | null }[]>([])
+  const aplicaProxy = (mediaId: string, src: string, path: string | null): void => {
+    const m = useEditor.getState().media.find((x) => x.id === mediaId)
+    if (m && m.path === src) useEditor.getState().setMediaEditProxy(mediaId, path)
+  }
+  const isPlayingNow = useEditor((s) => s.isPlaying)
+  useEffect(() => {
+    // o main pausa a fila de proxies enquanto toca; ao pausar, aplica o que ficou esperando
+    window.api.proxyPlaying(isPlayingNow)
+    if (!isPlayingNow) {
+      const fila = proxiesPendentes.current.splice(0)
+      for (const p of fila) aplicaProxy(p.mediaId, p.src, p.path)
+    }
+  }, [isPlayingNow])
+
+  useEffect(() => {
+    const removeProgress = window.api.onProxyProgress(({ mediaId, pct }) => {
+      useEditor.getState().setProxyProgress(mediaId, pct)
+    })
+    const removeDone = window.api.onProxyDone(({ mediaId, src, path }) => {
+      // Trocar o src de um <video> dispara load() nativo e bloqueia a thread
+      // (apareceu no perfil de travada: `load` dentro do commit do React).
+      // Durante o play, guarda e aplica quando o usuário pausar.
+      if (useEditor.getState().isPlaying) proxiesPendentes.current.push({ mediaId, src, path })
+      else aplicaProxy(mediaId, src, path)
+      useEditor.getState().setProxyProgress(mediaId, null)
+    })
+    return () => {
+      removeProgress()
+      removeDone()
+    }
+  }, [])
+
   useEffect(() => {
     media.forEach((m) => {
       // Audio always; video too (feeds the audio meter) when short enough to
@@ -195,7 +324,7 @@ export default function App(): JSX.Element {
       if (!wantsPeaks || !audioReady || m.peaks || peakPending.current.has(m.id)) return
       peakPending.current.add(m.id)
       peakQueue.current = peakQueue.current
-        .then(() => computePeaks(m.audioPath || m.path))
+        .then(() => window.api.mediaPeaks(m.audioPath || m.path))
         .then((peaks) => useEditor.getState().setPeaks(m.id, peaks))
         .catch(() => {})
         .finally(() => peakPending.current.delete(m.id))

@@ -111,7 +111,8 @@ export function ExportModal({ onClose }: { onClose: () => void }): JSX.Element {
         transition: c.transition,
         effects: c.effects,
         anim: c.anim,
-        mask: c.mask
+        mask: c.mask,
+        crop: c.crop
       }
       if (c.type === 'text') {
         // Rasterize the styled text to a full-canvas transparent PNG.

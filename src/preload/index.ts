@@ -3,6 +3,8 @@ import { contextBridge, ipcRenderer } from 'electron'
 const api = {
   openFiles: (): Promise<string[]> => ipcRenderer.invoke('dialog:openFiles'),
   probe: (path: string) => ipcRenderer.invoke('media:probe', path),
+  mediaPeaks: (path: string, buckets?: number): Promise<number[]> =>
+    ipcRenderer.invoke('media:peaks', path, buckets),
   checkMissingMedia: (paths: string[]): Promise<string[]> =>
     ipcRenderer.invoke('media:checkMissing', paths),
   relocateMedia: (missingNames: string[]): Promise<Record<string, string>> =>
@@ -12,6 +14,22 @@ const api = {
     ipcRenderer.on('import:progress', listener)
     return () => {
       ipcRenderer.removeListener('import:progress', listener)
+    }
+  },
+  proxyEnsure: (mediaId: string, src: string) => ipcRenderer.invoke('proxy:ensure', mediaId, src),
+  proxyPlaying: (v: boolean): void => ipcRenderer.send('proxy:playing', v),
+  onProxyProgress: (cb: (p: { mediaId: string; pct: number }) => void) => {
+    const listener = (_e: unknown, p: any) => cb(p)
+    ipcRenderer.on('proxy:progress', listener)
+    return () => {
+      ipcRenderer.removeListener('proxy:progress', listener)
+    }
+  },
+  onProxyDone: (cb: (p: { mediaId: string; src: string; path: string | null }) => void) => {
+    const listener = (_e: unknown, p: any) => cb(p)
+    ipcRenderer.on('proxy:done', listener)
+    return () => {
+      ipcRenderer.removeListener('proxy:done', listener)
     }
   },
   saveFileDialog: (defaultName: string): Promise<string | null> =>
@@ -77,6 +95,8 @@ const api = {
   setDisplaySource: (id: string | null): Promise<boolean> =>
     ipcRenderer.invoke('record:setDisplaySource', id),
   perfLog: (line: string): Promise<void> => ipcRenderer.invoke('perf:log', line),
+  perfProfile: (segundos: number): Promise<string> => ipcRenderer.invoke('perf:profile', segundos),
+  perfTrace: (segundos: number): Promise<string> => ipcRenderer.invoke('perf:trace', segundos),
   generateElement: (payload: { prompt: string; size?: string }): Promise<{ ok: boolean; path?: string; error?: string }> =>
     ipcRenderer.invoke('elements:generate', payload),
   libraryList: (): Promise<

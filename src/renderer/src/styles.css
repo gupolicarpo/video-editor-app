@@ -1279,6 +1279,26 @@ body {
   left: -6px;
   cursor: nesw-resize;
 }
+.sel-handle.n {
+  top: -6px;
+  left: calc(50% - 6px);
+  cursor: ns-resize;
+}
+.sel-handle.s {
+  bottom: -6px;
+  left: calc(50% - 6px);
+  cursor: ns-resize;
+}
+.sel-handle.e {
+  right: -6px;
+  top: calc(50% - 6px);
+  cursor: ew-resize;
+}
+.sel-handle.w {
+  left: -6px;
+  top: calc(50% - 6px);
+  cursor: ew-resize;
+}
 .insp-actions {
   display: flex;
   gap: 8px;
@@ -2141,4 +2161,9 @@ body {
 .sys-mix b {
   min-width: 38px;
   text-align: right;
+}
+
+/* Clipe que pertence a um grupo: faixa na base, para ver de relance o que anda junto */
+.clip.grouped {
+  box-shadow: inset 0 -3px 0 #f5b942;
 }

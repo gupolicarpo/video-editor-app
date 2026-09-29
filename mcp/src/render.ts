@@ -83,7 +83,8 @@ export function commonRenderProps(project: ProjectData, c: Clip) {
     transition: c.transition,
     effects: c.effects,
     anim: c.anim,
-    mask: c.mask
+    mask: c.mask,
+    crop: c.crop
   }
 }
 

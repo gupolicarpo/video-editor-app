@@ -1,7 +1,80 @@
-import { useEffect, useState } from 'react'
+import { memo, useEffect, useState } from 'react'
 import { useEditor } from '../store'
 import { fmtTime } from '../util'
 import type { MediaItem } from '../types'
+
+// Card da biblioteca. FORA do componente pai, e memoizado, de propósito.
+// Antes era `const Card = (...) => ...` declarado DENTRO de MediaLibrary: para o
+// React isso é um tipo de componente NOVO a cada render do pai, então toda
+// renderização da biblioteca (qualquer edição muda `clips`; cada tique de
+// progresso de proxy mudava `proxyProgress`) destruía e recriava TODOS os
+// cards — e cada card de vídeo tem um <video>, que o Chromium reabre do zero
+// (ffmpeg_demuxer OnOpenContextDone, segundos de worker por arquivo). Trace
+// real: 29 WebMediaPlayerImpl::DoLoad em 8 s de play, 43 threads saturadas,
+// compositor na fila, thread principal 1,1 s parada por quadro, áudio
+// picotando. O progresso do proxy é lido AQUI, por card, para que só o card
+// em questão renderize de novo.
+const Card = memo(function Card({
+  m,
+  overlay,
+  sumiu,
+  onAdd,
+  onRemove
+}: {
+  m: MediaItem
+  overlay?: boolean
+  sumiu: boolean
+  onAdd: (m: MediaItem, overlay?: boolean) => void
+  onRemove: (id: string) => void
+}): JSX.Element {
+  const pct = useEditor((s) => s.proxyProgress[m.id])
+  return (
+    <div
+      className={sumiu ? 'media-card compact missing' : 'media-card compact'}
+      draggable
+      onDragStart={(e) => {
+        e.dataTransfer.setData('application/x-media-id', m.id)
+        e.dataTransfer.effectAllowed = 'copy'
+      }}
+      title={`${m.name}${m.width ? ` · ${m.width}×${m.height}` : ''}`}
+    >
+      <div className="media-thumb">
+        {m.type === 'video' && (
+          <video src={window.api.mediaUrl(m.path)} muted preload="metadata" draggable={false} />
+        )}
+        {m.type === 'image' && <img src={window.api.mediaUrl(m.path)} alt={m.name} draggable={false} />}
+        {m.type === 'audio' && <div className="audio-icon">🎵</div>}
+        {m.type !== 'image' && <span className="media-dur">{fmtTime(m.duration)}</span>}
+        {pct != null && (
+          <span className="media-dur" style={{ left: 4, right: 'auto' }}>
+            proxy {Math.round(pct * 100)}%
+          </span>
+        )}
+        {sumiu && (
+          <span className="media-gone" title={`Arquivo não está mais em ${m.path}`}>
+            ⚠ sumiu
+          </span>
+        )}
+      </div>
+      <div className="media-name" title={m.name}>
+        {m.name}
+      </div>
+      <div className="media-sub">
+        {m.width ? `${m.width}×${m.height}` : m.type === 'audio' ? 'áudio' : ''}
+      </div>
+      {/* Actions stay VISIBLE. Hiding them behind hover made a grid of small
+          thumbnails look like the features had been removed. */}
+      <div className="media-actions">
+        <button className="btn-mini" title={overlay ? 'Sobrepor no vídeo' : 'Colocar na timeline'} onClick={() => onAdd(m, overlay)}>
+          {overlay ? '＋ Sobrepor' : '＋ Timeline'}
+        </button>
+        <button className="btn-mini ghost" title="Remover da biblioteca" onClick={() => onRemove(m.id)}>
+          ✕
+        </button>
+      </div>
+    </div>
+  )
+})
 
 export function MediaLibrary({ search = '' }: { search?: string }): JSX.Element {
   const media = useEditor((s) => s.media)
@@ -94,50 +167,6 @@ export function MediaLibrary({ search = '' }: { search?: string }): JSX.Element 
   const images = media.filter((m) => m.type === 'image' && matches(m))
   const audio = media.filter((m) => m.type === 'audio' && matches(m))
 
-  // Compact grid card (FlexClip-style): duration badge over the thumbnail,
-  // name below, tiny actions. Drag still works; ＋ drops at the playhead.
-  const Card = ({ m, overlay }: { m: MediaItem; overlay?: boolean }): JSX.Element => (
-    <div
-      className={missing.has(m.path) ? 'media-card compact missing' : 'media-card compact'}
-      draggable
-      onDragStart={(e) => {
-        e.dataTransfer.setData('application/x-media-id', m.id)
-        e.dataTransfer.effectAllowed = 'copy'
-      }}
-      title={`${m.name}${m.width ? ` · ${m.width}×${m.height}` : ''}`}
-    >
-      <div className="media-thumb">
-        {m.type === 'video' && (
-          <video src={window.api.mediaUrl(m.path)} muted preload="metadata" draggable={false} />
-        )}
-        {m.type === 'image' && <img src={window.api.mediaUrl(m.path)} alt={m.name} draggable={false} />}
-        {m.type === 'audio' && <div className="audio-icon">🎵</div>}
-        {m.type !== 'image' && <span className="media-dur">{fmtTime(m.duration)}</span>}
-        {missing.has(m.path) && (
-          <span className="media-gone" title={`Arquivo não está mais em ${m.path}`}>
-            ⚠ sumiu
-          </span>
-        )}
-      </div>
-      <div className="media-name" title={m.name}>
-        {m.name}
-      </div>
-      <div className="media-sub">
-        {m.width ? `${m.width}×${m.height}` : m.type === 'audio' ? 'áudio' : ''}
-      </div>
-      {/* Actions stay VISIBLE. Hiding them behind hover made a grid of small
-          thumbnails look like the features had been removed. */}
-      <div className="media-actions">
-        <button className="btn-mini" title={overlay ? 'Sobrepor no vídeo' : 'Colocar na timeline'} onClick={() => quickAdd(m, overlay)}>
-          {overlay ? '＋ Sobrepor' : '＋ Timeline'}
-        </button>
-        <button className="btn-mini ghost" title="Remover da biblioteca" onClick={() => removeMedia(m.id)}>
-          ✕
-        </button>
-      </div>
-    </div>
-  )
-
   return (
     <>
       {missing.size > 0 && (
@@ -166,7 +195,7 @@ export function MediaLibrary({ search = '' }: { search?: string }): JSX.Element 
         {videos.length > 0 ? (
           <div className="media-grid">
             {videos.map((m) => (
-              <Card key={m.id} m={m} />
+              <Card key={m.id} m={m} sumiu={missing.has(m.path)} onAdd={quickAdd} onRemove={removeMedia} />
             ))}
           </div>
         ) : (
@@ -184,7 +213,7 @@ export function MediaLibrary({ search = '' }: { search?: string }): JSX.Element 
             </p>
             <div className="media-grid">
               {images.map((m) => (
-                <Card key={m.id} m={m} overlay />
+                <Card key={m.id} m={m} overlay sumiu={missing.has(m.path)} onAdd={quickAdd} onRemove={removeMedia} />
               ))}
             </div>
           </>
@@ -201,7 +230,7 @@ export function MediaLibrary({ search = '' }: { search?: string }): JSX.Element 
           <h4 className="media-section-head">🎵 Áudio <span>({audio.length})</span></h4>
           <div className="media-grid">
             {audio.map((m) => (
-              <Card key={m.id} m={m} />
+              <Card key={m.id} m={m} sumiu={missing.has(m.path)} onAdd={quickAdd} onRemove={removeMedia} />
             ))}
           </div>
         </section>

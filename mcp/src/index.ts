@@ -232,7 +232,8 @@ server.registerTool(
   'update_clip',
   {
     title: 'Editar clipe',
-    description: 'Altera propriedades de um clipe existente (posição, tamanho, cor, fade, velocidade, volume, etc.).',
+    description:
+      'Altera propriedades de um clipe existente (posição, tamanho, cor, fade, velocidade, volume, recorte de bordas — fração removida de cada lado, etc.).',
     inputSchema: {
       clipId: z.string(),
       mediaId: z.string().optional().describe('Trocar a mídia que o clipe usa (ex: versão melhorada).'),
@@ -252,7 +253,16 @@ server.registerTool(
       brightness: z.number().optional(),
       contrast: z.number().optional(),
       saturation: z.number().optional(),
-      trackId: z.string().optional()
+      trackId: z.string().optional(),
+      crop: z
+        .object({
+          l: z.number().min(0).max(0.9),
+          r: z.number().min(0).max(0.9),
+          t: z.number().min(0).max(0.9),
+          b: z.number().min(0).max(0.9)
+        })
+        .optional()
+        .describe('Recorte de bordas (fração removida de cada lado, l+r ≤ 0.9 e t+b ≤ 0.9).')
     }
   },
   async (a) => {

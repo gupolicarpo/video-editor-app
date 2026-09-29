@@ -25,6 +25,7 @@ interface EditorState extends Snapshot {
   markers: Marker[]
   loopIn: number | null // preview loop range (session-only, not persisted)
   loopOut: number | null
+  proxyProgress: Record<string, number> // progresso do proxy de edição por mediaId (session-only)
   _past: Snapshot[]
   _future: Snapshot[]
   dirty: boolean
@@ -52,6 +53,7 @@ interface EditorState extends Snapshot {
   addRecording: (m: MediaItem) => void
   addDualRecording: (screen: MediaItem, cam: MediaItem) => void
   setMediaAudioPaths: (mediaId: string, audioPath: string | null, audioPaths: string[] | null) => void
+  setMediaEditProxy: (mediaId: string, path: string | null) => void
   relinkMedia: (mediaId: string, newPath: string) => void
   setPeaks: (mediaId: string, peaks: number[]) => void
   removeMedia: (id: string) => void
@@ -78,6 +80,9 @@ interface EditorState extends Snapshot {
   selectedTrackId: string | null
   selectTrack: (id: string | null) => void
   toggleSelect: (id: string) => void
+  selectOnly: (id: string) => void
+  groupSelection: () => void
+  ungroupSelection: () => void
   copySelection: () => void
   pasteAtPlayhead: () => void
   nudgeSelected: (deltaSec: number) => void
@@ -91,6 +96,7 @@ interface EditorState extends Snapshot {
   setLoopIn: (t: number | null) => void
   setLoopOut: (t: number | null) => void
   clearLoop: () => void
+  setProxyProgress: (id: string, pct: number | null) => void
   setMasterVolume: (volume: number) => void
   setProject: (patch: Partial<Pick<EditorState, 'projectW' | 'projectH' | 'projectFps'>>) => void
 }
@@ -199,6 +205,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   markers: [],
   loopIn: null,
   loopOut: null,
+  proxyProgress: {},
   projectW: 1920,
   projectH: 1080,
   projectFps: 30,
@@ -412,7 +419,19 @@ export const useEditor = create<EditorState>((set, get) => ({
 
   setMediaAudioPaths: (mediaId, audioPath, audioPaths) =>
     set((s) => ({
-      media: s.media.map((m) => (m.id === mediaId ? { ...m, audioPath, audioPaths, peaks: undefined } : m)),
+      // Só zera peaks se o audioPath REALMENTE mudou — antes isso rodava a
+      // toda probe e forçava recomputar o waveform inteiro de novo.
+      media: s.media.map((m) =>
+        m.id === mediaId
+          ? { ...m, audioPath, audioPaths, peaks: m.audioPath !== audioPath ? undefined : m.peaks }
+          : m
+      ),
+      dirty: true
+    })),
+
+  setMediaEditProxy: (mediaId, path) =>
+    set((s) => ({
+      media: s.media.map((m) => (m.id === mediaId ? { ...m, editProxyPath: path } : m)),
       dirty: true
     })),
 
@@ -422,7 +441,7 @@ export const useEditor = create<EditorState>((set, get) => ({
   relinkMedia: (mediaId, newPath) => {
     get().commit()
     set((s) => ({
-      media: s.media.map((m) => (m.id === mediaId ? { ...m, path: newPath } : m)),
+      media: s.media.map((m) => (m.id === mediaId ? { ...m, path: newPath, editProxyPath: null } : m)),
       dirty: true
     }))
   },
@@ -733,7 +752,37 @@ export const useEditor = create<EditorState>((set, get) => ({
   // and refusing to zoom out any further.
   setZoom: (pps) => set({ pps: Math.min(400, Math.max(0.2, pps)) }),
   setTrackHeight: (h) => set({ trackHeight: Math.min(120, Math.max(18, h)) }),
-  select: (id) => set({ selectedClipId: id, selectedClipIds: id ? [id] : [] }),
+  // Selecionar um clipe de um GRUPO seleciona o grupo inteiro — é o que faz a
+  // seção já montada andar junta (o arrasto em grupo da multi-seleção faz o
+  // resto). Alt+clique (selectOnly) pega só o clipe, para ajustar um take
+  // dentro do grupo sem desagrupar.
+  select: (id) =>
+    set((s) => {
+      if (!id) return { selectedClipId: null, selectedClipIds: [] }
+      const g = s.clips.find((c) => c.id === id)?.groupId
+      const ids = g ? s.clips.filter((c) => c.groupId === g).map((c) => c.id) : [id]
+      return { selectedClipId: id, selectedClipIds: ids }
+    }),
+  selectOnly: (id) => set({ selectedClipId: id, selectedClipIds: [id] }),
+  groupSelection: () => {
+    const s = get()
+    const ids = new Set(s.selectedClipIds)
+    if (ids.size < 2) return
+    s.commit()
+    const groupId = nanoid(6)
+    set((st) => ({ clips: st.clips.map((c) => (ids.has(c.id) ? { ...c, groupId } : c)) }))
+  },
+  ungroupSelection: () => {
+    const s = get()
+    const grupos = new Set(
+      s.clips.filter((c) => s.selectedClipIds.includes(c.id) && c.groupId).map((c) => c.groupId)
+    )
+    if (grupos.size === 0) return
+    s.commit()
+    set((st) => ({
+      clips: st.clips.map((c) => (c.groupId && grupos.has(c.groupId) ? { ...c, groupId: undefined } : c))
+    }))
+  },
   selectedTrackId: null,
   selectTrack: (id) => set({ selectedTrackId: id }),
 
@@ -741,7 +790,12 @@ export const useEditor = create<EditorState>((set, get) => ({
   toggleSelect: (id) =>
     set((s) => {
       const has = s.selectedClipIds.includes(id)
-      const ids = has ? s.selectedClipIds.filter((x) => x !== id) : [...s.selectedClipIds, id]
+      // um clipe agrupado entra/sai da seleção com o grupo inteiro
+      const g = s.clips.find((c) => c.id === id)?.groupId
+      const alvo = g ? s.clips.filter((c) => c.groupId === g).map((c) => c.id) : [id]
+      const ids = has
+        ? s.selectedClipIds.filter((x) => !alvo.includes(x))
+        : [...s.selectedClipIds, ...alvo.filter((x) => !s.selectedClipIds.includes(x))]
       return { selectedClipIds: ids, selectedClipId: has ? (ids[ids.length - 1] ?? null) : id }
     }),
 
@@ -788,6 +842,13 @@ export const useEditor = create<EditorState>((set, get) => ({
 
     const t0 = Math.min(...s._clipboard.map((c) => c.start))
     const shift = s.playhead - t0
+    // cópias de um grupo formam um grupo NOVO — senão colariam no original
+    const novoGrupo = new Map<string, string>()
+    const grupoDe = (g?: string): string | undefined => {
+      if (!g) return undefined
+      if (!novoGrupo.has(g)) novoGrupo.set(g, nanoid(6))
+      return novoGrupo.get(g)
+    }
     const pasted = s._clipboard
       .map((c) => ({ clip: c, trackId: retarget(c) }))
       .filter((x): x is { clip: Clip; trackId: string } => x.trackId !== null)
@@ -795,6 +856,7 @@ export const useEditor = create<EditorState>((set, get) => ({
         ...clip,
         id: nanoid(8),
         trackId,
+        groupId: grupoDe(clip.groupId),
         start: Math.max(0, clip.start + shift)
       }))
     if (pasted.length === 0) return
@@ -937,6 +999,14 @@ export const useEditor = create<EditorState>((set, get) => ({
   setLoopIn: (t) => set({ loopIn: t }),
   setLoopOut: (t) => set({ loopOut: t }),
   clearLoop: () => set({ loopIn: null, loopOut: null }),
+
+  setProxyProgress: (id, pct) =>
+    set((s) => {
+      const proxyProgress = { ...s.proxyProgress }
+      if (pct == null) delete proxyProgress[id]
+      else proxyProgress[id] = pct
+      return { proxyProgress }
+    }),
 
   setMasterVolume: (volume) => set({ masterVolume: Math.max(0, Math.min(2, volume)), dirty: true }),
 

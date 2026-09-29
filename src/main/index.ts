@@ -1,4 +1,4 @@
-import { app, shell, BrowserWindow, ipcMain, dialog, protocol, session, desktopCapturer } from 'electron'
+import { app, shell, BrowserWindow, ipcMain, dialog, protocol, session, desktopCapturer, contentTracing } from 'electron'
 import { extname, join, normalize, sep } from 'path'
 import { createReadStream, statSync, existsSync, readdirSync } from 'fs'
 import { Readable } from 'stream'
@@ -12,8 +12,10 @@ import {
   applyLook,
   enhanceAudio,
   cancelRender,
-  autoGradeClip
+  autoGradeClip,
+  computePeaksFfmpeg
 } from './ffmpeg'
+import { ensureEditProxy, setPlaybackActive } from './proxy'
 import { loadSettings, saveSettings, saveSettingsReport, settingsFilePath } from './settings'
 import { generateVideo, enhancePrompt } from './ai'
 import { cancelSeedanceGeneration } from './ai/seedance'
@@ -112,6 +114,19 @@ const allowedMediaDirs = new Set<string>()
 function normKey(p: string): string {
   return normalize(p).toLowerCase()
 }
+// Um único ponto de gravação p/ o flight recorder e o perfilador automático
+// abaixo escreverem no mesmo userData/perf-quadros.log.
+function appendPerfLog(line: string): void {
+  try {
+    // Nome novo de propósito: o perf.log antigo virou um "fantasma" congelado
+    // para o sandbox que lê estes arquivos (redirecionamento do contêiner do
+    // Windows), então as travadas reais nunca chegavam a quem depura.
+    const f = join(app.getPath('userData'), 'perf-quadros.log')
+    require('fs').appendFileSync(f, `${new Date().toISOString()} ${line}\n`)
+  } catch {
+    /* logging must never hurt */
+  }
+}
 function allowMediaPath(p?: string | null): void {
   if (p) allowedMediaPaths.add(normKey(p))
 }
@@ -120,13 +135,19 @@ function allowMediaDir(d?: string | null): void {
 }
 function allowProjectMedia(data: unknown): void {
   const media = (data as {
-    media?: Array<{ path?: string; audioPath?: string | null; audioPaths?: string[] | null }>
+    media?: Array<{
+      path?: string
+      audioPath?: string | null
+      audioPaths?: string[] | null
+      editProxyPath?: string | null
+    }>
   } | null)?.media
   if (Array.isArray(media)) {
     for (const m of media) {
       allowMediaPath(m?.path)
       allowMediaPath(m?.audioPath)
       for (const audioPath of m?.audioPaths || []) allowMediaPath(audioPath)
+      allowMediaPath(m?.editProxyPath)
     }
   }
 }
@@ -205,6 +226,11 @@ function registerMediaProtocol(): void {
     })
   })
 }
+
+// Pasta de dados alternativa, para rodar uma segunda instância ISOLADA (perfil
+// de CPU, testes) sem encostar no autosave nem nos proxies do usuário. Tem de
+// vir antes do 'ready': depois disso o Chromium já abriu o perfil.
+if (process.env.VEDIT_USER_DATA) app.setPath('userData', process.env.VEDIT_USER_DATA)
 
 app.whenReady().then(() => {
   // App-owned dirs are always servable via media://.
@@ -325,6 +351,24 @@ function registerIpc(): void {
     for (const audioPath of meta.audioPaths || []) allowMediaPath(audioPath)
     return meta
   })
+
+  ipcMain.handle('media:peaks', (_e, filePath: string, buckets?: number) =>
+    computePeaksFfmpeg(filePath, buckets)
+  )
+
+  ipcMain.on('proxy:playing', (_e, v: boolean) => setPlaybackActive(!!v))
+  ipcMain.handle('proxy:ensure', (e, mediaId: string, src: string) =>
+    ensureEditProxy(src, {
+      onProgress: (pct) => e.sender.send('proxy:progress', { mediaId, pct }),
+      onDone: (path) => {
+        if (path) allowMediaPath(path)
+        e.sender.send('proxy:done', { mediaId, src, path })
+      }
+    }).then((res) => {
+      if (res.status === 'ready') allowMediaPath(res.path)
+      return res
+    })
+  )
 
   // Pick an output path for export.
   ipcMain.handle('dialog:saveFile', async (_e, defaultName: string) => {
@@ -518,12 +562,110 @@ function registerIpc(): void {
   // Flight recorder: the renderer reports main-thread stalls here; they land in
   // userData/perf.log so a freeze produces facts instead of a shrug.
   ipcMain.handle('perf:log', (_e, line: string) => {
+    appendPerfLog(line)
+  })
+
+  // Perfilador automático: em vez de esperar o usuário descrever a travada,
+  // amostra a call stack real via CDP (Profiler) por alguns segundos e grava
+  // as pilhas mais quentes no mesmo log do flight recorder acima.
+  // TRACE NATIVO. O perfil de JS (perf:profile) mostrou 88-97% do tempo de
+  // travada em "(program)" — fora do JavaScript. Só o tracing do Chromium
+  // (mídia, layout, GPU, IPC, scheduler) diz QUAL tarefa nativa bloqueou.
+  // Grava N segundos num arquivo em userData/traces e anota o caminho no log.
+  let tracing = false
+  ipcMain.handle('perf:trace', async (_e, segundos: number) => {
+    if (tracing) return 'ocupado'
+    tracing = true
     try {
-      const f = join(app.getPath('userData'), 'perf.log')
-      require('fs').appendFileSync(f, `${new Date().toISOString()} ${line}
-`)
-    } catch {
-      /* logging must never hurt */
+      const dir = join(app.getPath('userData'), 'traces')
+      if (!existsSync(dir)) require('fs').mkdirSync(dir, { recursive: true })
+      await contentTracing.startRecording({
+        included_categories: [
+          'toplevel', 'blink', 'blink.user_timing', 'cc', 'gpu', 'media', 'audio', 'v8', 'ipc',
+          'renderer.scheduler', 'sequence_manager', 'disabled-by-default-devtools.timeline',
+          'disabled-by-default-devtools.timeline.frame'
+        ],
+        excluded_categories: ['*']
+      })
+      await new Promise((r) => setTimeout(r, Math.min(8000, Math.max(1000, segundos * 1000))))
+      const path = await contentTracing.stopRecording(
+        join(dir, `trace-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.json`)
+      )
+      appendPerfLog(`trace ${path}`)
+      return path
+    } catch (err) {
+      appendPerfLog(`trace FALHOU ${String((err as Error).message || err)}`)
+      return 'erro'
+    } finally {
+      tracing = false
+    }
+  })
+
+  ipcMain.handle('perf:profile', async (e, segundos: number) => {
+    const wc = e.sender
+    let attached = false
+    try {
+      if (wc.debugger.isAttached()) return 'ocupado'
+      wc.debugger.attach('1.3')
+      attached = true
+      await wc.debugger.sendCommand('Profiler.enable')
+      await wc.debugger.sendCommand('Profiler.setSamplingInterval', { interval: 500 })
+      await wc.debugger.sendCommand('Profiler.start')
+      await new Promise((r) => setTimeout(r, Math.min(8000, Math.max(1000, segundos * 1000))))
+      const { profile } = (await wc.debugger.sendCommand('Profiler.stop')) as {
+        profile: {
+          nodes: Array<{
+            id: number
+            callFrame: { functionName: string; lineNumber: number }
+            children?: number[]
+            hitCount?: number
+          }>
+          samples?: number[]
+        }
+      }
+      wc.debugger.detach()
+      attached = false
+
+      const byId = new Map(profile.nodes.map((n) => [n.id, n]))
+      const parentOf = new Map<number, number>()
+      for (const n of profile.nodes) {
+        for (const c of n.children || []) parentOf.set(c, n.id)
+      }
+
+      const stackCounts = new Map<string, number>()
+      let totalAmostras = 0
+      for (const n of profile.nodes) {
+        const hits = n.hitCount || 0
+        if (!hits) continue
+        if (n.callFrame.functionName === '(idle)') continue
+        totalAmostras += hits
+
+        const frames: string[] = []
+        let cur: number | undefined = n.id
+        for (let depth = 0; depth < 8 && cur !== undefined; depth++) {
+          const node = byId.get(cur)
+          if (!node) break
+          const name = node.callFrame.functionName
+          if (name && name !== '(anonymous)') frames.push(`${name}:${node.callFrame.lineNumber}`)
+          cur = parentOf.get(cur)
+        }
+        const stack = frames.join(' < ') || '(sem nome)'
+        stackCounts.set(stack, (stackCounts.get(stack) || 0) + hits)
+      }
+
+      const top = [...stackCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 12)
+      const linhas = top.map(
+        ([stack, n]) => `  ${((n / Math.max(1, totalAmostras)) * 100).toFixed(1)}%  ${stack}`
+      )
+      appendPerfLog(`perfil ${new Date().toISOString()} amostras=${totalAmostras} duracao=${segundos}s\n${linhas.join('\n')}`)
+      return 'ok'
+    } catch (err) {
+      try {
+        if (attached && wc.debugger.isAttached()) wc.debugger.detach()
+      } catch {
+        /* já desanexado */
+      }
+      return String((err as Error)?.message || err)
     }
   })
 

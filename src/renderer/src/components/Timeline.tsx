@@ -61,6 +61,11 @@ export function Timeline(): JSX.Element {
   const selectedClipIds = useEditor((s) => s.selectedClipIds)
   const removeSelected = useEditor((s) => s.removeSelected)
   const removeSelectedKeepGap = useEditor((s) => s.removeSelectedKeepGap)
+  const groupSelection = useEditor((s) => s.groupSelection)
+  const ungroupSelection = useEditor((s) => s.ungroupSelection)
+  const temGrupoNaSelecao = useEditor((s) =>
+    s.clips.some((c) => !!c.groupId && s.selectedClipIds.includes(c.id))
+  )
   const toggleTrackFlag = useEditor((s) => s.toggleTrackFlag)
   const selectedTrackId = useEditor((s) => s.selectedTrackId)
   const selectTrack = useEditor((s) => s.selectTrack)
@@ -134,12 +139,17 @@ export function Timeline(): JSX.Element {
     }
     compute(e.clientX)
     const onMove = (ev: MouseEvent) => compute(ev.clientX)
+    // Se o mouseup se perder (Alt+Tab, soltar fora da janela), o blur também
+    // encerra o arrasto — senão ele fica preso e cada movimento do mouse
+    // roda elementsFromPoint sobre 12 mil nós + updateClip (medido: ~1s/movimento).
     const onUp = () => {
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
+      window.removeEventListener('blur', onUp)
     }
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
+    window.addEventListener('blur', onUp)
   }
 
   return (
@@ -156,12 +166,15 @@ export function Timeline(): JSX.Element {
             const h = Math.min(window.innerHeight - 220, Math.max(180, startH + (startY - ev.clientY)))
             setTlHeight(h)
           }
+          // Idem: blur cobre o mouseup perdido (Alt+Tab, soltar fora da janela).
           const onUp = () => {
             window.removeEventListener('mousemove', onMove)
             window.removeEventListener('mouseup', onUp)
+            window.removeEventListener('blur', onUp)
           }
           window.addEventListener('mousemove', onMove)
           window.addEventListener('mouseup', onUp)
+          window.addEventListener('blur', onUp)
         }}
       />
       <div className="tl-toolbar">
@@ -193,6 +206,23 @@ export function Timeline(): JSX.Element {
           title="Excluir deixando o buraco no lugar (Shift+Del)"
         >
           🗑⊟ Deixar buraco
+        </button>
+        <span className="sep" />
+        <button
+          className="btn-mini"
+          onClick={groupSelection}
+          disabled={selectedClipIds.length < 2}
+          title="Agrupar os clipes selecionados: passam a ser selecionados e movidos juntos (Ctrl+G). Alt+clique pega um clipe só."
+        >
+          🔗 Agrupar{selectedClipIds.length > 1 ? ` (${selectedClipIds.length})` : ''}
+        </button>
+        <button
+          className="btn-mini"
+          onClick={ungroupSelection}
+          disabled={!temGrupoNaSelecao}
+          title="Desfazer o grupo (Ctrl+Shift+G)"
+        >
+          ✂🔗 Desagrupar
         </button>
         <span className="sep" />
         <button
@@ -447,11 +477,17 @@ const ClipBox = memo(function ClipBox({
       toggleSelect(clip.id)
       return
     }
-    const st0 = useEditor.getState()
+    const pre = useEditor.getState()
     // Clicking a clip already inside a multi-selection keeps the group;
     // otherwise selection collapses to this clip.
+    const jaSelecionado = pre.selectedClipIds.length > 1 && pre.selectedClipIds.includes(clip.id)
+    // Alt+clique: só este clipe, mesmo que pertença a um grupo.
+    if (e.altKey) pre.selectOnly(clip.id)
+    else if (!jaSelecionado) select(clip.id)
+    // Estado lido DEPOIS de selecionar: `select` expande para o grupo inteiro,
+    // e o arrasto precisa enxergar essa seleção já no primeiro clique.
+    const st0 = useEditor.getState()
     const inGroup = st0.selectedClipIds.length > 1 && st0.selectedClipIds.includes(clip.id)
-    if (!inGroup) select(clip.id)
     if (locked) return
     useEditor.getState().commit()
     const startX = e.clientX
@@ -464,7 +500,13 @@ const ClipBox = memo(function ClipBox({
     // exactly what you do not want when the pair is a camera + screen take.
     const trackLocked = (id: string): boolean =>
       !!st0.tracks.find((t) => t.id === id)?.locked
-    const trimIds = (inGroup ? st0.selectedClipIds : [clip.id]).filter(
+    // Grupo salvo (groupId): MOVE junto, mas o trim é do clipe sob o cursor —
+    // aparar a seção inteira pelo mesmo delta destruiria a montagem. A
+    // multi-seleção manual (Shift/Ctrl+clique) continua aparando em conjunto.
+    const soUmGrupo =
+      !!clip.groupId &&
+      st0.selectedClipIds.every((id) => st0.clips.find((c) => c.id === id)?.groupId === clip.groupId)
+    const trimIds = (inGroup && !(mode !== 'move' && soUmGrupo) ? st0.selectedClipIds : [clip.id]).filter(
       (id) => id === clip.id || !trackLocked(st0.clips.find((c) => c.id === id)?.trackId ?? '')
     )
     const trimOrig = new Map(
@@ -552,9 +594,12 @@ const ClipBox = memo(function ClipBox({
       }
       window.removeEventListener('mousemove', onMove)
       window.removeEventListener('mouseup', onUp)
+      window.removeEventListener('blur', onUp)
     }
+    // Idem: blur cobre o mouseup perdido (Alt+Tab, soltar fora da janela).
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
+    window.addEventListener('blur', onUp)
   }
 
   function snap(value: number, selfId: string): number {
@@ -579,7 +624,7 @@ const ClipBox = memo(function ClipBox({
 
   return (
     <div
-      className={`clip ${clip.type} ${selected ? 'selected' : ''} ${dimmed ? 'dimmed' : ''} ${locked ? 'locked' : ''}`}
+      className={`clip ${clip.type} ${selected ? 'selected' : ''} ${dimmed ? 'dimmed' : ''} ${locked ? 'locked' : ''} ${clip.groupId ? 'grouped' : ''}`}
       style={{ left: clip.start * pps, width: Math.max(6, clip.duration * pps), top: 4, height: trackHeight - 8 }}
       onMouseDown={(e) => startDrag('move', e)}
       onClick={(e) => e.stopPropagation()}
@@ -608,6 +653,7 @@ const ClipBox = memo(function ClipBox({
       )}
       <div className="trim-handle left" onMouseDown={(e) => startDrag('trim-left', e)} />
       <div className="clip-label">
+        {clip.groupId ? '🔗 ' : ''}
         {clip.type === 'text' ? `T  ${clip.text?.content?.split('\n')[0] || 'Texto'}` : media?.name || clip.type}
       </div>
       <div className="trim-handle right" onMouseDown={(e) => startDrag('trim-right', e)} />

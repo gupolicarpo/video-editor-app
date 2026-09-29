@@ -2,31 +2,10 @@
 
 const thumbCache = new Map<string, string>()
 
-export async function computePeaks(path: string, buckets = 600): Promise<number[]> {
-  const res = await fetch(`media://local/?p=${encodeURIComponent(path)}`)
-  const buf = await res.arrayBuffer()
-  const Ctx: typeof AudioContext = window.AudioContext || (window as any).webkitAudioContext
-  const ctx = new Ctx()
-  try {
-    const audio = await ctx.decodeAudioData(buf)
-    const data = audio.getChannelData(0)
-    const block = Math.max(1, Math.floor(data.length / buckets))
-    const peaks: number[] = []
-    let max = 0.01
-    for (let i = 0; i < buckets; i++) {
-      let p = 0
-      for (let j = 0; j < block; j++) {
-        const v = Math.abs(data[i * block + j] || 0)
-        if (v > p) p = v
-      }
-      peaks.push(p)
-      if (p > max) max = p
-    }
-    return peaks.map((p) => p / max)
-  } finally {
-    ctx.close()
-  }
-}
+// Os picos de áudio agora vêm do processo principal via ffmpeg
+// (window.api.mediaPeaks, src/main/ffmpeg.ts computePeaksFfmpeg) em vez de
+// carregar o arquivo inteiro aqui: medido em 11,9s de arrayBuffer() + 1,7s de
+// decodeAudioData e 500MB de RAM transitória para um vídeo de 6,5min/502MB.
 
 export function getThumbnail(path: string): Promise<string> {
   if (thumbCache.has(path)) return Promise.resolve(thumbCache.get(path)!)

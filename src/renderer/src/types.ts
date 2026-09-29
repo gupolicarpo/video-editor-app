@@ -9,6 +9,7 @@ export interface MediaItem {
   path: string
   audioPath?: string | null // all embedded audio tracks mixed for preview/export
   audioPaths?: string[] | null // individual embedded tracks for detach-audio
+  editProxyPath?: string | null // cópia 720p com keyframe curto, SÓ para o preview
   type: MediaType
   duration: number
   width: number
@@ -216,6 +217,11 @@ export interface Clip {
   anim?: ClipAnim
   // shape mask (narrator inside a circle, etc.) — same shape in preview and export
   mask?: MaskShape
+  // recorte de bordas: fracao removida de cada lado da fonte, antes do enquadramento (fit/scale/xFrac/yFrac/rotate/anims)
+  crop?: { l: number; r: number; t: number; b: number }
+  // Clipes com o mesmo groupId formam um GRUPO: selecionar um seleciona todos,
+  // então movem juntos. Só organização da timeline — não vai para o export.
+  groupId?: string
   // text
   text?: TextConfig
 }

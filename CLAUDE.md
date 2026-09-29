@@ -102,7 +102,7 @@ dele e ficam **só na máquina** (`settings.json`).
   (não destrutivo, aparece no preview). Ideias adaptadas de browser-use/video-use (MIT).
 - **Micro-fade de 30ms** em toda borda de áudio sem fade do usuário — mata o "pop" nos cortes.
 - **🎥 Gravar** (`src/main/record.ts` + `components/RecordPanel.tsx`): webcam+mic com seletor de fonte,
-  trava exposição/foco/branco, grava VP9 e normaliza para H.264/AAC. Cai direto na biblioteca.
+  trava exposição/foco/branco, grava H.264 por hardware direto no disco e normaliza para H.264/AAC. Cai direto na biblioteca.
 - **✂ Remover fundo** (`src/main/matte.ts` + `components/MattePanel.tsx`): RobustVideoMatting local
   (ONNX, `vendor/models/rvm_mobilenetv3_fp32.onnx`). Gera WebM/VP9 com alfa real; o motor já compõe.
   Requer Python com `onnxruntime` + `numpy`. Com `onnxruntime-directml` usa a GPU sozinho.
@@ -163,6 +163,51 @@ dele e ficam **só na máquina** (`settings.json`).
 - **`getSettings().frameRate` é o que foi PEDIDO, não o que chega.** O medidor de fps ao vivo conta
   quadros com `requestVideoFrameCallback` num `<video>` de 2×2 sempre montado — o preview grande some
   quando o painel vira barra compacta, que é justamente como se grava jogo.
+
+### Armadilhas de desempenho do preview — medidas por trace nativo (não desfaça)
+- **Nunca declare um componente DENTRO de outro.** O `Card` da biblioteca era `const Card = (...) =>`
+  dentro de `MediaLibrary`: para o React é um tipo novo a cada render do pai, então todos os cards eram
+  destruídos e recriados — e cada card de vídeo tem um `<video>` que o Chromium reabre do zero. Trace
+  de 8 s de play: **29 `WebMediaPlayerImpl::DoLoad`, 130 s de worker em `ffmpeg_demuxer
+  OnOpenContextDone`, 43 threads saturadas**, a thread principal parada 1,1 s por quadro em
+  `LayerTreeHost::WaitForCommitCompletion` e o áudio picotando. Depois de içar e memoizar: **0, 0, 0**.
+  Assinar `proxyProgress` no pai transformou isso em tempestade (um re-render por tique de progresso).
+- **Elemento de mídia se monta uma vez e não se desmonta.** Montar só os clipes perto da agulha criava
+  e destruía `<video>`/`<audio>` a cada entrada e saída da janela. Agora todos ficam montados; longe
+  da agulha usam `preload="metadata"`. Caixa de clipe inativo leva `pointer-events: none`, senão
+  rouba o clique da moldura de seleção.
+- **O Chromium reparte um orçamento fixo de decodificação** (~200 quadros/s com proxies 720p60): com 3+
+  vídeos tocando cada um cai para 30-40 fps. **Esconder não devolve orçamento** — `visibility:hidden` e
+  `display:none` continuaram decodificando ~30 q/s. Só `pause()` devolve. Por isso a oclusão em
+  `sync()` pausa o vídeo totalmente coberto — mas **só se ele estiver mudo**.
+- **Não dê um `<audio>` separado a cada vídeo lendo o MP4 original.** Um `<audio>` num MP4 lê o vídeo
+  inteiro intercalado só para chegar ao som; vários em paralelo deixaram o áudio sem dado ("tatata").
+  O `<audio>` irmão existe só para gravações multifaixa (`audioPath`, arquivo pequeno).
+- **Forma de onda não se calcula no renderer.** `fetch` + `arrayBuffer()` + `decodeAudioData` num
+  gameplay de 6,5 min: 502 MB na memória, 11,9 s + 1,7 s. Pelo ffmpeg no main (`media:peaks`): 0,59 s.
+- **Proxy de edição** (`src/main/proxy.ts`, `editProxyPath`): cópia 720p com keyframe a cada 0,25 s,
+  usada SÓ no `<video>` do preview; export e MCP leem `m.path`. Seek medido: 390-630 ms → 50-100 ms.
+  A fila **não roda durante o play**, lê a fonte com `-readrate 2` e prioridade mínima, e a troca de
+  `src` espera a pausa (trocar no meio do play dispara `load()` e bloqueia a thread).
+- **O perfil de JS não enxerga esse tipo de travada** (88-97% em "(program)"). Use o trace nativo:
+  `perf:trace` (`contentTracing`), automático em travada > 0,7 s no play e manual em **Ctrl+Shift+T**.
+  Tudo cai em `userData/perf-quadros.log` (travadas, quadros perdidos, fome de buffer por elemento).
+- **Arrasto sem `mouseup` fica preso**: todo arrasto registra também `blur` para se cancelar.
+- **Instância isolada para medir:** `VEDIT_USER_DATA=<pasta>` troca o `userData`; com
+  `--remote-debugging-port` dá para perfilar sem tocar no projeto do usuário.
+- **Leitura de `%APPDATA%` por fora pode ser um fantasma.** Rodando dentro de um app empacotado do
+  Windows (MSIX), o acesso é redirecionado para `...\Packages\<app>\LocalCache\Roaming` e arquivos
+  antigos aparecem congelados. `fsutil hardlink list <arquivo>` mostra o caminho real.
+
+### Grupos e recorte
+- **`groupId` no clipe**: `select` expande para o grupo inteiro, então o arrasto em grupo já existente
+  move a seção. Alt+clique = `selectOnly`. Trim num grupo salvo afeta só o clipe sob o cursor; colar
+  gera `groupId` novo. Não entra no payload do export.
+- **`crop` {l,r,t,b}** = fração removida de cada lado da fonte. No motor entra logo após
+  `setpts=PTS-STARTPTS`, como `crop=floor(iw*…/2)*2:…` — usar `iw/ih` ALI é seguro porque ainda não há
+  `scale=eval=frame` na cadeia, e pega a dimensão já auto-rotacionada. Paridade medida: 0 px, 42,7 dB.
+- **Texto não usa `scale`**: o tamanho é `text.fontSizeRel`. A alça da moldura altera a fonte, e a
+  moldura vem de `measureTextBox` (a mesma medição do export).
 
 ### Armadilhas do áudio do sistema (loopback) — medidas
 - **`getUserMedia` com `chromeMediaSource:'desktop'` NÃO captura áudio no Windows.** Era por isso que a

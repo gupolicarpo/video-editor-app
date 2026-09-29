@@ -83,6 +83,11 @@ function hasNvenc(): Promise<boolean> {
 }
 const FFPROBE = resolveBin('FFPROBE_PATH', 'ffprobe')
 
+/** The resolved ffprobe binary, for modules that spawn their own passes. */
+export function ffprobeBin(): string {
+  return FFPROBE
+}
+
 export interface MediaMeta {
   path: string
   type: 'video' | 'audio' | 'image'
@@ -253,6 +258,64 @@ export async function probeMedia(filePath: string): Promise<MediaMeta> {
     fps: Math.round(fps * 1000) / 1000,
     audioStreamCount: isImage ? 0 : audioStreams.length
   }
+}
+
+// Picos de áudio calculados no processo principal via ffmpeg (PCM cru), sem
+// carregar o arquivo inteiro no renderer. Medido: o caminho antigo
+// (fetch(media://) + arrayBuffer + decodeAudioData no renderer) levava 11,9s
+// só no arrayBuffer + 1,7s de decode, e 500MB de RAM transitória, num vídeo
+// de 6,5min/502MB — com 15 buracos de 100-267ms no rAF da UI.
+export async function computePeaksFfmpeg(filePath: string, buckets = 600): Promise<number[]> {
+  const meta = await probeMedia(filePath)
+  const SR = 8000
+  const totalAmostras = Math.max(1, Math.round((meta.duration || 0) * SR))
+  const block = Math.max(1, Math.floor(totalAmostras / buckets))
+
+  return new Promise((resolve, reject) => {
+    const proc = spawn(
+      FFMPEG,
+      ['-v', 'error', '-i', filePath, '-vn', '-ac', '1', '-ar', String(SR), '-f', 's16le', '-'],
+      { windowsHide: true }
+    )
+    const peaks: number[] = []
+    let atual = 0
+    let contador = 0
+    let sawSample = false
+    let leftover: Buffer = Buffer.alloc(0)
+    let error = ''
+
+    proc.stdout.on('data', (chunk: Buffer) => {
+      let buf = leftover.length ? Buffer.concat([leftover, chunk]) : chunk
+      const usable = buf.length - (buf.length % 2)
+      leftover = buf.subarray(usable)
+      for (let i = 0; i < usable; i += 2) {
+        sawSample = true
+        const v = Math.abs(buf.readInt16LE(i)) / 32768
+        if (v > atual) atual = v
+        if (++contador === block) {
+          peaks.push(atual)
+          atual = 0
+          contador = 0
+        }
+      }
+    })
+    proc.stderr.on('data', (d) => (error += d.toString()))
+    proc.on('error', reject)
+    proc.on('close', (code) => {
+      if (code !== 0 || !sawSample) {
+        reject(new Error(error.slice(-1200) || `ffmpeg saiu com código ${code}`))
+        return
+      }
+      if (contador > 0) peaks.push(atual)
+
+      const max = Math.max(0.01, ...peaks)
+      const normalized = peaks.map((p) => p / max)
+      while (normalized.length < buckets) normalized.push(normalized[normalized.length - 1] ?? 0)
+      normalized.length = buckets
+
+      resolve(normalized)
+    })
+  })
 }
 
 const audioJobs = new Map<string, Promise<string>>()
@@ -438,6 +501,8 @@ export interface RenderClip {
   }
   // shape mask — mirrors the renderer's MaskShape
   mask?: 'none' | 'circle' | 'ellipse' | 'roundrect'
+  // recorte de bordas: fracao removida de cada lado da fonte, antes do enquadramento
+  crop?: { l: number; r: number; t: number; b: number }
 }
 
 /**
@@ -1086,6 +1151,38 @@ function eqOf(clip: RenderClip): string {
     : graded
 }
 
+// Recorte de bordas (crop): fracao removida de cada lado da fonte, ANTES do
+// enquadramento (fitTo/scale/xFrac/yFrac/rotate/anims). Devolve '' sem crop.
+//
+// Usa iw/ih do proprio filtro `crop`, que — como `rotate` (ver nota acima) —
+// resolve essas variaveis UMA VEZ, na configuracao da cadeia. A armadilha do
+// CLAUDE.md ("crop resolve iw/ih uma unica vez... o offset era x='(iw-cw)/2'
+// mas no instante da configuracao o zoom vale 1... todo push-in recortava a
+// partir da borda esquerda") e sobre usar iw/ih DEPOIS de um scale=eval=frame
+// já ter mudado o tamanho do quadro ao longo do tempo — aí iw/ih congelam no
+// valor do primeiro frame e o offset baseado neles fica errado nos frames
+// seguintes. Aqui e diferente: este cropChain roda logo apos o
+// trim/setpts=PTS-STARTPTS, antes de qualquer scale=eval=frame existir na
+// cadeia — entao iw/ih SAO as dimensoes reais (constantes) da entrada, ja
+// auto-rotacionada pelo ffmpeg (video de celular com rotacao por metadado).
+// Resolver uma vez aqui e correto porque o valor nao muda quadro a quadro.
+function cropChain(clip: RenderClip): string {
+  if (!clip.crop) return ''
+  let { l, r, t, b } = clip.crop
+  l = Math.min(0.9, Math.max(0, l))
+  r = Math.min(0.9, Math.max(0, r))
+  t = Math.min(0.9, Math.max(0, t))
+  b = Math.min(0.9, Math.max(0, b))
+  if (l + r > 0.9) r = 0.9 - l
+  if (t + b > 0.9) b = 0.9 - t
+  if (l < 0.001 && r < 0.001 && t < 0.001 && b < 0.001) return ''
+  const cw = (1 - l - r).toFixed(6)
+  const ch = (1 - t - b).toFixed(6)
+  const cx = l.toFixed(6)
+  const cy = t.toFixed(6)
+  return `,crop=floor(iw*${cw}/2)*2:floor(ih*${ch}/2)*2:floor(iw*${cx}/2)*2:floor(ih*${cy}/2)*2`
+}
+
 // Scale/fit a source into a w×h box. alpha=true keeps transparency (for overlays);
 // alpha=false pads with opaque black (for xfade inputs, which must be opaque & equal-size).
 function fitTo(fit: string, w: number, h: number, alpha: boolean): string {
@@ -1362,7 +1459,7 @@ async function renderTimelinePass(
     const consumed = clip.duration * speed
     const clipped = `cv${n}`
     filters.push(
-      `[${item.visualSrc}]trim=start=${sourceOffset.toFixed(3)}:duration=${consumed.toFixed(3)},setpts=PTS-STARTPTS[${clipped}]`
+      `[${item.visualSrc}]trim=start=${sourceOffset.toFixed(3)}:duration=${consumed.toFixed(3)},setpts=PTS-STARTPTS${cropChain(clip)}[${clipped}]`
     )
     const hd = headD.get(clip.id) || 0
     const td = tailD.get(clip.id) || 0
